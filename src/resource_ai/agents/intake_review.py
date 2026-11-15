@@ -157,6 +157,7 @@ MATERIAL_TERMS = {
     "pa6": r"PA\s*6|nylon\s*6|나일론\s*6",
     "pa66": r"PA\s*66|nylon\s*66|나일론\s*66",
     "pcabs": r"PC\s*[/\- ]?\s*ABS",
+    "ferrous": r"철\s*스크랩|고철|ferrous\s*scrap|steel\s*scrap",
 }
 
 FORM_TERMS = {
@@ -172,6 +173,7 @@ FORM_TERMS = {
     "ingot": r"인고트|ingots?",
     "net": r"폐어망|어망|fishing\s*nets?",
     "can": r"음료\s*캔|폐\s*캔|(?:beverage\s+)?cans?|UBC",
+    "foam": r"스티로폼|감용\s*전|foams?",
 }
 
 
