@@ -3,7 +3,13 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from resource_ai.agents.intake_review import IntakeAgentRequest, review_candidate
+from resource_ai.agents.intake_review import (
+    IntakeAgentRequest,
+    IntakeBatchRequest,
+    PublicIntakePacket,
+    review_batch,
+    review_candidate,
+)
 from resource_ai.integrations.llm_client import parse_model_json
 from resource_ai.main import app
 
@@ -51,6 +57,55 @@ def test_intake_review_requires_internal_service_authentication():
         },
     )
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        ("이 사업장은 알루미늄캔을 수거·선별·가공합니다.", "reviewed"),
+        ("이 사업장은 알루미늄 캔을 수거·선별·가공합니다.", "reviewed"),
+        ("이 사업장은 알루미늄 스크랩을 가공합니다.", "needs_evidence"),
+        ("이 사업장은 철제 음료캔을 선별합니다.", "needs_evidence"),
+        ("이 사업장은 알루미늄캔을 반입하지 않습니다.", "needs_evidence"),
+    ],
+)
+def test_aluminium_can_wording_preserves_material_and_restriction_checks(summary, expected):
+    request = PublicIntakePacket(
+        capability_key="site-a",
+        site_scope="published_site_process",
+        process="알루미늄캔 선별·가공",
+        recycling_types={},
+        site="합성 사업장",
+        material="aluminium",
+        form="can",
+        waste_code="51-29-03",
+        next_check="이번 로트 인수 확인",
+        sources=[
+            {
+                "source_id": "public",
+                "summary": summary,
+                "publisher": "합성 사업장",
+                "url": "https://example.org/plant",
+                "locator": "공정 소개",
+            }
+        ],
+    )
+    result = review_batch(
+        IntakeBatchRequest(candidates=[request]),
+        lambda **_: json.dumps(
+            [
+                {
+                    "capability_key": "site-a",
+                    "kind": "form_mentioned",
+                    "source_id": "public",
+                    "quote": summary,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    ).results["site-a"]
+    assert result.status == expected
+    assert not result.dispatch_approved
 
 
 @pytest.mark.parametrize(

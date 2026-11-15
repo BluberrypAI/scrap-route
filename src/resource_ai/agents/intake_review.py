@@ -197,7 +197,7 @@ INITIAL_FORM_TERMS = {
     ("pp", "shredded"): r"파쇄품|파쇄물|분쇄품|분쇄물|플레이크|shred(?:ded|s)?|flakes?|regrind",
     ("pe", "film"): r"필름|films?",
     ("pet", "bottle"): r"PET\s*병|페트병|병|bottles?",
-    ("aluminium", "can"): r"음료\s*캔|폐\s*캔|(?:beverage\s+)?cans?|UBC",
+    ("aluminium", "can"): r"알루미늄\s*캔|음료\s*캔|폐\s*캔|(?:beverage\s+)?cans?|UBC",
 }
 MATERIAL_TERMS = {
     "pp": r"PP|polypropylene|폴리프로필렌",
@@ -227,7 +227,7 @@ FORM_TERMS = {
     "wallpaper": r"벽지|wallpaper",
     "ingot": r"인고트|ingots?",
     "net": r"폐어망|어망|fishing\s*nets?",
-    "can": r"음료\s*캔|폐\s*캔|(?:beverage\s+)?cans?|UBC",
+    "can": r"알루미늄\s*캔|음료\s*캔|폐\s*캔|(?:beverage\s+)?cans?|UBC",
     "foam": r"스티로폼|감용\s*전|foams?",
     "buoy": r"부표|buoys?",
     "drum": r"드럼|drums?",
