@@ -223,3 +223,9 @@ SCRAP의 공정·업체 후보는 scrap-server의 PostgreSQL에서 조회합니�
 | `POST /api/treatment/facility-web-search` | `POST /treatment/facility-web-search` | 지원 소재의 현재 공정에 대한 추가 공개 웹 조사 |
 
 서버와 AI에 같은 `SCRAP_INTAKE_SERVICE_TOKEN`을 설정하고 AI에 Azure Responses 배포를 설정합니다. 검토 결과와 조사 단서는 후보 판단에 사용하며 실제 인계 확인은 서버에서 따로 진행합니다.
+
+## 2026-11-15 세부 재질 연결 재검사
+
+server PR #47 / web PR #46에서 문진의 포장재·PA6 어망·기타 수지·알루미늄 스크랩을 연결했습니다. 이 엔진은 서버에서 보낸 후보 전부를 기존 API로 검토합니다. 실제 Azure 49조합/290건은 공개 근거 확인 38건, 추가 근거 필요 252건이었으며 인수 자동 승인은 하지 않았습니다. 첫 병렬 실행의 74건 미완료는 순차 재실행 후 결과를 받았습니다. 이는 가용성 문제가 해결됐다는 의미가 아닙니다.
+
+장애 분석을 위해 후보 검토 실패를 `intake_review_failed reason=...`으로 기록합니다. 허용된 유형만 출력하고 기업 정보·사진·문서·모델 원문·URL·키·예외 원문은 남기지 않습니다. 유형은 provider_rate_limit / provider_auth / provider_timeout / output_budget / provider_filter / incomplete_response / provider_unavailable / invalid_model_json / invalid_result_shape / missing_or_duplicate_result입니다. 상태 계약은 그대로 `model_unavailable`이고 근거 부족과 구분합니다. 자동 재시도나 승인 우회는 추가하지 않았습니다. 관련 테스트 8개 포함 전체 520개 통과, 환경 의존 72개 제외.

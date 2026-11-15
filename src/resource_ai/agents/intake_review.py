@@ -1,6 +1,7 @@
 """Review the public evidence for a treatment handoff."""
 
 import json
+import logging
 import re
 from typing import Annotated, Literal
 
@@ -15,6 +16,25 @@ from resource_ai.agents.lot_review import (
     observe_photos,
 )
 from resource_ai.integrations.llm_client import ReviewModelUnavailable, parse_model_json
+
+logger = logging.getLogger(__name__)
+
+
+def log_review_failure(error):
+    # Never log model text, evidence, site names, URLs, tokens, or raw exceptions.
+    if isinstance(error, ReviewModelUnavailable):
+        reason = {
+            "HTTP 429": "provider_rate_limit",
+            "HTTP 401": "provider_auth",
+            "HTTP 403": "provider_auth",
+            "provider timeout": "provider_timeout",
+            "incomplete: max_output_tokens": "output_budget",
+            "incomplete: content_filter": "provider_filter",
+            "incomplete response": "incomplete_response",
+        }.get(str(error), "provider_unavailable")
+    else:
+        reason = "invalid_model_json"
+    logger.warning("intake_review_failed reason=%s", reason)
 
 
 class SourceLink(BaseModel):
@@ -255,9 +275,11 @@ def review_batch(request, model):
             **model_kwargs,
         )
         rows = parse_model_json(text)
-    except (ReviewModelUnavailable, ValueError, TypeError):
+    except (ReviewModelUnavailable, ValueError, TypeError) as error:
+        log_review_failure(error)
         return IntakeBatchResponse(results=results)
     if not isinstance(rows, list):
+        logger.warning("intake_review_failed reason=invalid_result_shape")
         return IntakeBatchResponse(results=results)
     findings, duplicates = {}, set()
     for row in rows:
@@ -271,6 +293,7 @@ def review_batch(request, model):
     for packet in packets:
         key = packet.capability_key
         if key not in findings or key in duplicates:
+            logger.warning("intake_review_failed reason=missing_or_duplicate_result")
             continue
         sources = (
             {source.source_id: source for source in packet.sources}
