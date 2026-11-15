@@ -228,4 +228,21 @@ SCRAP의 공정·업체 후보는 scrap-server의 PostgreSQL에서 조회합니�
 
 server PR #47 / web PR #46에서 문진의 포장재·PA6 어망·기타 수지·알루미늄 스크랩을 연결했습니다. 이 엔진은 서버에서 보낸 후보 전부를 기존 API로 검토합니다. 실제 Azure 49조합/290건은 공개 근거 확인 38건, 추가 근거 필요 252건이었으며 인수 자동 승인은 하지 않았습니다. 첫 병렬 실행의 74건 미완료는 순차 재실행 후 결과를 받았습니다. 이는 가용성 문제가 해결됐다는 의미가 아닙니다.
 
-장애 분석을 위해 후보 검토 실패를 `intake_review_failed reason=...`으로 기록합니다. 허용된 유형만 출력하고 기업 정보·사진·문서·모델 원문·URL·키·예외 원문은 남기지 않습니다. 유형은 provider_rate_limit / provider_auth / provider_timeout / output_budget / provider_filter / incomplete_response / provider_unavailable / invalid_model_json / invalid_result_shape / missing_or_duplicate_result입니다. 상태 계약은 그대로 `model_unavailable`이고 근거 부족과 구분합니다. 자동 재시도나 승인 우회는 추가하지 않았습니다. 관련 테스트 8개 포함 전체 520개 통과, 환경 의존 72개 제외.
+장애 분석을 위해 후보 검토 실패를 `intake_review_failed reason=...`으로 기록합니다. 허용된 유형만 출력하고 기업 정보·사진·문서·모델 원문·URL·키·예외 원문은 남기지 않습니다. 유형은 provider_rate_limit / provider_auth / provider_timeout / output_budget / provider_filter / incomplete_response / provider_unavailable / invalid_model_json / invalid_result_shape / missing_or_duplicate_result입니다. 상태 계약은 그대로 `model_unavailable`이고 근거 부족과 구분합니다.
+
+## 2026-11-16: 근거 부족 사유와 호출 안정성
+
+후보별 `evidence_gaps` 배열을 추가했습니다. 이전 응답은 빈 배열로 호환됩니다.
+
+| 값 | 의미 |
+| --- | --- |
+| `input_form_unproven` / `material_unproven` | 투입 형태 / 재질 근거 부족 |
+| `output_only` / `process_unproven` | 생산품 소개만 있음 / 수행 공정 불명 |
+| `site_scope_unverified` | 실제 수행 사업장 불명 |
+| `source_missing` | 공개 자료 없음 |
+| `source_context_conflict` / `citation_invalid` | 인용 문맥 상충 / 인용 대조 실패 |
+| `unspecified` | 세부 원인 구분 불가 |
+
+모델의 부족 사유와 코드의 인용·형태·사업장 검사 결과를 보존합니다. 이것은 검토 이유의 범주이며 법적 적합성 판정이나 모델 내부 추론 기록이 아닙니다. 과거 252회에는 이 필드가 없었으므로 새 검토 사유와 구분해야 합니다.
+
+Azure 요청 대기는 80초입니다. HTTP 429에 한해 `Retry-After`가 0~30초이고 남은 시간 예산에 여유가 있으면 한 번 재시도합니다. 응답 여부가 불명확한 시간 초과·인증 오류는 자동 재호출하지 않습니다. 추론 설정은 high이며, 실패를 근거 확인이나 인수 승인으로 바꾸지 않습니다. 전체 테스트 540개 통과, 환경 의존 72개 제외, subtest 24개 통과.

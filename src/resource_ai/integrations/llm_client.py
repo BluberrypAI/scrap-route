@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from urllib.parse import urlsplit
 
 import httpx
@@ -61,14 +62,34 @@ def azure_response(settings, body, *, timeout):
         raise ReviewModelUnavailable()
     prefix = project[1] if project else ""
     try:
+        deadline = time.monotonic() + timeout
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            response = client.post(
-                f"https://{host}{prefix}/openai/v1/responses",
-                headers={"api-key": key},
-                json={**body, "model": settings.azure_openai_deployment, "store": False},
-            )
-            response.raise_for_status()
-            payload = response.json()
+            for attempt in range(2):
+                response = client.post(
+                    f"https://{host}{prefix}/openai/v1/responses",
+                    headers={"api-key": key},
+                    json={**body, "model": settings.azure_openai_deployment, "store": False},
+                    timeout=max(0.1, deadline - time.monotonic()),
+                )
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError:
+                    # Retry only an explicit rejection, never an ambiguous timeout.
+                    # Long or invalid provider delays remain a recoverable failure.
+                    raw_delay = response.headers.get("retry-after", "2")
+                    delay = float(raw_delay) if re.fullmatch(r"\d+(?:\.\d+)?", raw_delay) else None
+                    if (
+                        attempt == 0
+                        and response.status_code == 429
+                        and delay is not None
+                        and 0 <= delay <= 30
+                        and delay + 10 < deadline - time.monotonic()
+                    ):
+                        time.sleep(delay)
+                        continue
+                    raise
+                payload = response.json()
+                break
         if payload.get("status") != "completed":
             details = payload.get("incomplete_details") or {}
             reason = details.get("reason")
@@ -104,7 +125,7 @@ def review_with_azure(settings, *, instructions, evidence, images=None):
             "instructions": instructions,
             "input": model_input,
         },
-        timeout=80 if images is not None else 35,
+        timeout=80,
     )
     try:
         return "".join(
