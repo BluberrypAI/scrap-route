@@ -88,12 +88,22 @@ class BatchFinding(Finding):
     lot_review: LotFinding | None = None
 
 
+class RecyclingBasis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: str = Field(max_length=120)
+    as_of: str = Field(max_length=10)
+    source_url: str = Field(pattern=r"^https://www\.law\.go\.kr/", max_length=1500)
+    pages: list[int] = Field(max_length=30)
+    notes: list[str] = Field(max_length=10)
+
+
 class PublicIntakePacket(IntakeAgentRequest):
     capability_key: CapabilityKey
     site_scope: Literal["published_site_process", "site_role_hypothesis"]
     process: str = Field(min_length=1, max_length=200)
     waste_code: str | None = Field(pattern=r"^\d{2}-\d{2}-\d{2}$")
     recycling_types: dict[Literal["free", "analysis", "unmarked"], list[str]]
+    recycling_basis: RecyclingBasis | None = None
     intake_answers: dict[str, Annotated[str, Field(min_length=1, max_length=600)]] = Field(
         default_factory=dict, max_length=24
     )
@@ -293,7 +303,14 @@ def review_batch(request, model):
                 "unspecified(구분 불가). 확인된 문장은 빈 배열로 둔다. "
                 "해당 사업장, 공정, 재질, 형태가 함께 확인되는 자료만 form_mentioned로 판단한다. "
                 "해당 형태의 반입 금지·제한이 명시되면 restriction_mentioned로 판단한다. "
-                "회사 일반 설명이나 다른 후보의 근거를 끌어오지 마라. R코드는 검색 문맥이다. "
+                "회사 일반 설명이나 다른 후보의 근거를 끌어오지 마라. "
+                "recycling_types는 해당 분류번호의 유형표 등재 범위이고 업체 허가 증명이 아니다. "
+                "free는 표의 사전 분석 해당 없음, analysis는 사전 분석 해당, unmarked는 불명이다. "
+                "R-10이 두 그룹에 있으면 최종 목적에 따른 조건을 모두 보존해라. "
+                "recycling_basis는 이 표의 출처다. 유형표만으로 업체의 취급을 인정하지 마라. "
+                "공개 공정 사실과 현재 로트 인수 승인을 구분해라. "
+                "자료에 실제 투입·수행 공정이 확인되면 현재 허가·여유 용량 미확인 안내만으로 "
+                "그 공개 사실까지 insufficient로 내리지 마라. "
                 "분류번호가 null이면 현재 산출물 형태만 사용하고 분류번호를 추정하지 마라. "
                 "현재 허가, 용량, 실제 물량 인수 여부는 추정하지 마라. "
                 "최초 로트는 재질과 반입 형태가 함께 적힌 문장을 인용해라. "
