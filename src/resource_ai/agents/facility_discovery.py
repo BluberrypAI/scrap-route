@@ -1,11 +1,11 @@
-"""Find source-backed public facility leads for one PP process."""
+"""Find source-backed facility leads for a server-selected catalogue process."""
 
 import logging
 import re
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from resource_ai.integrations.llm_client import (
     ReviewModelUnavailable,
@@ -33,13 +33,20 @@ PROCESS = {
     "pp-compound": "재생 펠렛 컴파운딩",
 }
 FORMS = {
-    "scrap": "사출 잔재·스크랩",
+    "scrap": "제조 잔재·스크랩",
     "rigid": "경질 조각",
     "film": "필름",
-    "shredded": "선별 PP 파쇄품·분쇄품(플레이크)",
+    "shredded": "선별 파쇄품·분쇄품(플레이크)",
     "flake": "플레이크",
     "washed": "세척품",
     "pellet": "재생 펠렛",
+    "bale": "압축 베일 (수령 업체를 찾으며 베일 생산 업체로 대체하지 않음)",
+    "bottle": "사용 후 PET병",
+    "wallpaper": "PVC 벽지 잔재",
+    "ingot": "EPS 감용 인고트",
+    "foam": "감용 전 EPS 스티로폼",
+    "net": "PA6 폐어망",
+    "can": "사용 후 알루미늄 음료캔",
 }
 GROUPS = {"free": "사전 분석 비해당", "analysis": "사전 분석 해당", "unmarked": "요건 미표시"}
 
@@ -79,14 +86,51 @@ class PublicReference(BaseModel):
 
 class FacilityDiscoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    transition_key: Literal[
-        "pp-prepare", "pp-clean", "pp-pelletise", "pp-shredded-to-pellet", "pp-compound"
-    ]
-    input_form: Literal["scrap", "rigid", "film", "shredded", "flake", "washed", "pellet"]
+    transition_key: str = Field(pattern=r"^[a-z][a-z0-9-]{0,100}$")
+    input_form: str = Field(pattern=r"^[a-z][a-z0-9-]{0,80}$")
+    material: (
+        Literal[
+            "pp",
+            "pe",
+            "pet",
+            "abs",
+            "ps",
+            "san",
+            "pvc",
+            "eps",
+            "pa6",
+            "pa66",
+            "pcabs",
+            "aluminium",
+            "ferrous",
+        ]
+        | None
+    ) = None
+    process_label: str | None = Field(default=None, min_length=2, max_length=200)
+    operation_steps: list[str] = Field(default_factory=list, max_length=20)
     region: Region
-    waste_code: Literal["51-03-01", "51-03-07"] | None
+    waste_code: str | None = Field(pattern=r"^\d{2}-\d{2}-\d{2}$")
     recycling_types: dict[Literal["free", "analysis", "unmarked"], list[str]] | None
     starting_points: list[PublicReference] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def known_process_context(self):
+        if self.input_form not in FORMS:
+            raise ValueError("Unknown input form")
+        if self.material is None:
+            if self.transition_key not in PROCESS:
+                raise ValueError("Server catalogue material and process are required")
+            self.material = "pp"
+        prefix = "al" if self.material == "aluminium" else self.material
+        if not self.transition_key.startswith(prefix + "-"):
+            raise ValueError("Process and material disagree")
+        if self.process_label is None:
+            if self.transition_key not in PROCESS:
+                raise ValueError("Server catalogue process label is required")
+            self.process_label = PROCESS[self.transition_key]
+        if any(not step.strip() or len(step) > 200 for step in self.operation_steps):
+            raise ValueError("Invalid public operation step")
+        return self
 
 
 class FacilityDiscoveryResponse(BaseModel):
@@ -169,8 +213,9 @@ def discover(request, settings):
             "JSON 배열만 반환하라. 키는 site, address, process, url이다."
         ),
         "input": (
-            f"권역 {REGIONS[request.region]}\n재질 PP\n투입 형태 {FORMS[request.input_form]}"
-            f"\n필요 공정 {PROCESS[request.transition_key]}"
+            f"권역 {REGIONS[request.region]}\n재질 {request.material.upper()}\n투입 형태 {FORMS[request.input_form]}"
+            f"\n필요 공정 {request.process_label}"
+            f"\n공정 단계 {' → '.join(request.operation_steps)}"
             f"\n분류번호 {request.waste_code or '후속 산출물의 분류 미확인'}"
             f"\n관련 재활용 유형 {', '.join(hints) or '확인 필요'}"
             f"\n공개 검색 단서\n{starting_points or '없음'}"

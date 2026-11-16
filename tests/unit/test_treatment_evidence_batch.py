@@ -88,7 +88,7 @@ def test_live_search_uses_current_form_and_retains_public_sources(monkeypatch):
     }
 
     def response(settings, body, *, timeout):
-        assert "투입 형태 선별 PP 파쇄품" in body["input"]
+        assert "투입 형태 선별 파쇄품" in body["input"]
         assert "재생 펠렛 생산" in body["input"]
         assert "사전 분석 해당 R-10" in body["input"]
         assert "서울·인천·경기" in body["input"]
@@ -137,6 +137,8 @@ def test_live_search_uses_current_form_and_retains_public_sources(monkeypatch):
         ("pp", "shredded", "51-03-01", "This site accepts PP flakes.", "reviewed"),
         ("pp", "shredded", "51-03-01", "This site accepts PP pellets.", "needs_evidence"),
         ("pp", "shredded", "51-03-01", "This site accepts PET flakes.", "needs_evidence"),
+        ("ferrous", "scrap", "51-29-01", "철스크랩 원료를 투입합니다.", "reviewed"),
+        ("ferrous", "scrap", "51-29-01", "구리 스크랩 원료를 투입합니다.", "needs_evidence"),
         ("pe", "film", "51-03-07", "This site accepts polyethylene film.", "reviewed"),
         (
             "pe",

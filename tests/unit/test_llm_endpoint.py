@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from typing import ClassVar
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -84,3 +85,43 @@ def test_rejected_endpoints(endpoint):
     with pytest.raises(ReviewModelUnavailable):
         azure_response(settings(endpoint), {}, timeout=1)
     assert FakeClient.calls == []
+
+
+@pytest.mark.parametrize("delay,retry", [("2", True), ("120", False), ("invalid", False)])
+def test_rate_limit_retry_is_bounded_and_honours_provider_delay(monkeypatch, delay, retry):
+    calls, waits = [], []
+
+    def post(self, url, **kwargs):
+        calls.append(kwargs)
+        return httpx.Response(
+            429 if len(calls) == 1 else 200,
+            request=httpx.Request("POST", url),
+            headers={"retry-after": delay},
+            json={"status": "completed"},
+        )
+
+    monkeypatch.setattr(FakeClient, "post", post)
+    monkeypatch.setattr(llm_client.time, "sleep", waits.append)
+    if retry:
+        assert (
+            azure_response(settings("https://res.openai.azure.com"), {}, timeout=80)["status"]
+            == "completed"
+        )
+        assert len(calls) == 2 and waits == [2]
+    else:
+        with pytest.raises(ReviewModelUnavailable, match="HTTP 429"):
+            azure_response(settings("https://res.openai.azure.com"), {}, timeout=80)
+        assert len(calls) == 1 and waits == []
+
+
+def test_provider_timeout_is_not_retried(monkeypatch):
+    calls = []
+
+    def post(self, url, **kwargs):
+        calls.append(url)
+        raise httpx.ReadTimeout("timeout")
+
+    monkeypatch.setattr(FakeClient, "post", post)
+    with pytest.raises(ReviewModelUnavailable, match="provider timeout"):
+        azure_response(settings("https://res.openai.azure.com"), {}, timeout=80)
+    assert len(calls) == 1

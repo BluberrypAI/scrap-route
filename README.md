@@ -1,5 +1,7 @@
 # Re:Source AI
 
+> **현재 SCRAP 처리경로 서비스:** 공정·업체 데이터와 인계 기록은 `scrap-server` PostgreSQL에서 관리합니다. 이 서비스는 후보 전체의 AI 근거 검토와 공개 업체 조사를 담당합니다. 2026-11-15 공개 검색을 PP에서 전체 지원 소재 13종(11개 수지군·알루미늄·철스크랩)으로 확장했습니다. 서버의 공정명·재질·형태·단계를 사용하며, 검색 도구가 반환한 출처 URL이 일치한 단서만 반환합니다. 현재 허가·반입 승인은 추정하지 않습니다. 아래의 기존 연구 아키텍처와 구분합니다.
+
 중소 제조기업의 폐자원 처리 의사결정을 지원하는 **AI·지식 기반 서비스 레포**입니다.
 공정·시설 후보 탐색, 근거 문서 검색, 법규·시설 검증 지원, 비용·탄소 계산을 담당합니다.
 
@@ -8,6 +10,8 @@
 - SCRAP 처리경로 API: [docs/scrap-next-step.md](docs/scrap-next-step.md)
 - 상태·사진 업체 검토: [사진만 먼저 관찰 → 설명·업체 자료 대조](docs/lot-vision-review.md). 업체 최종 수락과 구분합니다.
 - 업체별 질문 답변: [추가 답변을 AI 검토에 반영](docs/intake-answers.md). 답변은 자기신고이며 공개 근거·반입 승인으로 취급하지 않습니다.
+- 플라스틱 업체 확장: [11개 수지군의 소재·형태 근거 검토와 Azure 실호출 결과](docs/plastic-evidence-review.md). 공정·사업장 데이터는 서버 DB에 있으며 이 레포는 AI 검토를 담당합니다.
+- 수도권 후속 검증: [신규 업체 검토·알루미늄캔 표현 수정](docs/capital-region-review-20261116.md). 원문에 있는 “알루미늄캔”을 놓치던 형태 검증을 수정했으며 실제 업체 인수는 자동 승인하지 않습니다.
 - 의사결정 연구 검토: [docs/scrap-decision-research.md](docs/scrap-decision-research.md)
 - 팀 공통 규칙: [resource-ai-team/.github CONTRIBUTING](https://github.com/resource-ai-team/.github/blob/main/CONTRIBUTING.md)
 
@@ -211,12 +215,35 @@ resource-rag evaluate --cases data/config/retrieval_eval.json
 
 ## SCRAP 반입 근거 검토
 
-SCRAP의 공정·업체 후보는 scrap-server의 PostgreSQL에서 조회합니다. AI 서비스는 서버가 보낸 후보별 공개 근거를 검토하고, 요청이 있을 때 PP 공정의 공개 웹 조사 단서를 반환합니다.
+SCRAP의 공정·업체 후보는 scrap-server의 PostgreSQL에서 조회합니다. AI 서비스는 서버가 보낸 후보별 공개 근거를 검토하고, 요청이 있을 때 서버가 선택한 재질·현재 형태·공정의 공개 웹 조사 단서를 반환합니다.
 
-| scrap-server API | scrap-ai 내부 API | 역할 |
+| scrap-server API | scrap-route 내부 API | 역할 |
 | --- | --- | --- |
 | `POST /api/treatment/intake-review` | `POST /treatment/intake-reviews` | 선택한 한 업체의 반입 근거 검토 |
 | `POST /api/treatment/intake-reviews` | `POST /treatment/intake-reviews` | 현재 단계의 모든 업체 후보 검토 |
-| `POST /api/treatment/facility-web-search` | `POST /treatment/facility-web-search` | PP 공정에 대한 추가 공개 웹 조사 |
+| `POST /api/treatment/facility-web-search` | `POST /treatment/facility-web-search` | 지원 소재의 현재 공정에 대한 추가 공개 웹 조사 |
 
 서버와 AI에 같은 `SCRAP_INTAKE_SERVICE_TOKEN`을 설정하고 AI에 Azure Responses 배포를 설정합니다. 검토 결과와 조사 단서는 후보 판단에 사용하며 실제 인계 확인은 서버에서 따로 진행합니다.
+
+## 2026-11-15 세부 재질 연결 재검사
+
+server PR #47 / web PR #46에서 문진의 포장재·PA6 어망·기타 수지·알루미늄 스크랩을 연결했습니다. 이 엔진은 서버에서 보낸 후보 전부를 기존 API로 검토합니다. 실제 Azure 49조합/290건은 공개 근거 확인 38건, 추가 근거 필요 252건이었으며 인수 자동 승인은 하지 않았습니다. 첫 병렬 실행의 74건 미완료는 순차 재실행 후 결과를 받았습니다. 이는 가용성 문제가 해결됐다는 의미가 아닙니다.
+
+장애 분석을 위해 후보 검토 실패를 `intake_review_failed reason=...`으로 기록합니다. 허용된 유형만 출력하고 기업 정보·사진·문서·모델 원문·URL·키·예외 원문은 남기지 않습니다. 유형은 provider_rate_limit / provider_auth / provider_timeout / output_budget / provider_filter / incomplete_response / provider_unavailable / invalid_model_json / invalid_result_shape / missing_or_duplicate_result입니다. 상태 계약은 그대로 `model_unavailable`이고 근거 부족과 구분합니다.
+
+## 2026-11-16: 근거 부족 사유와 호출 안정성
+
+후보별 `evidence_gaps` 배열을 추가했습니다. 이전 응답은 빈 배열로 호환됩니다.
+
+| 값 | 의미 |
+| --- | --- |
+| `input_form_unproven` / `material_unproven` | 투입 형태 / 재질 근거 부족 |
+| `output_only` / `process_unproven` | 생산품 소개만 있음 / 수행 공정 불명 |
+| `site_scope_unverified` | 실제 수행 사업장 불명 |
+| `source_missing` | 공개 자료 없음 |
+| `source_context_conflict` / `citation_invalid` | 인용 문맥 상충 / 인용 대조 실패 |
+| `unspecified` | 세부 원인 구분 불가 |
+
+모델의 부족 사유와 코드의 인용·형태·사업장 검사 결과를 보존합니다. 이것은 검토 이유의 범주이며 법적 적합성 판정이나 모델 내부 추론 기록이 아닙니다. 과거 252회에는 이 필드가 없었으므로 새 검토 사유와 구분해야 합니다.
+
+Azure 요청 대기는 80초입니다. HTTP 429에 한해 `Retry-After`가 0~30초이고 남은 시간 예산에 여유가 있으면 한 번 재시도합니다. 응답 여부가 불명확한 시간 초과·인증 오류는 자동 재호출하지 않습니다. 추론 설정은 high이며, 실패를 근거 확인이나 인수 승인으로 바꾸지 않습니다. 전체 테스트 540개 통과, 환경 의존 72개 제외, subtest 24개 통과.
