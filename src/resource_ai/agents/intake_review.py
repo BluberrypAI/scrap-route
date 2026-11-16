@@ -3,9 +3,10 @@
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from resource_ai.agents.lot_review import (
     LOT_INSTRUCTIONS,
@@ -120,6 +121,13 @@ class IntakeBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidates: list[PublicIntakePacket] = Field(min_length=1, max_length=5)
     lot_context: LotContext | None = None
+
+    @model_validator(mode="after")
+    def unique_candidates(self):
+        keys = [packet.capability_key for packet in self.candidates]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate candidate keys")
+        return self
 
 
 class IntakeAgentResponse(BaseModel):
@@ -265,7 +273,28 @@ def covers_initial_input(packet, finding):
 def review_batch(request, model):
     packets = request.candidates
     context = request.lot_context
-    results = {
+    observations = observe_photos(context, model) if context is not None else None
+    if context is not None and observations is None:
+        logger.warning("intake_review_failed reason=photo_observation_unavailable")
+        return IntakeBatchResponse(results=_unavailable_results(packets, context))
+    # Lot questions make a five-candidate answer too large for one model call.
+    # Share one independent observation; keep every candidate, with at most
+    # three concurrent comparisons (the HTTP contract allows five candidates).
+    size = 2 if context is not None else len(packets)
+    chunks = [packets[start : start + size] for start in range(0, len(packets), size)]
+    if len(chunks) == 1:
+        return IntakeBatchResponse(results=_review_packets(chunks[0], context, observations, model))
+    with ThreadPoolExecutor(max_workers=len(chunks), thread_name_prefix="intake-review") as pool:
+        batches = pool.map(
+            lambda batch: _review_packets(batch, context, observations, model), chunks
+        )
+        return IntakeBatchResponse(
+            results={key: value for batch in batches for key, value in batch.items()}
+        )
+
+
+def _unavailable_results(packets, context):
+    return {
         packet.capability_key: IntakeAgentResponse(
             status="model_unavailable",
             next_check=packet.next_check,
@@ -273,6 +302,10 @@ def review_batch(request, model):
         )
         for packet in packets
     }
+
+
+def _review_packets(packets, context, observations, model):
+    results = _unavailable_results(packets, context)
     evidence = [
         {
             **packet.model_dump(exclude={"sources", "next_check"}),
@@ -284,11 +317,7 @@ def review_batch(request, model):
         for packet in packets
     ]
     model_kwargs = {}
-    observations = None
     if context is not None:
-        observations = observe_photos(context, model)
-        if observations is None:
-            return IntakeBatchResponse(results=results)
         evidence = {
             "candidates": evidence,
             "lot": context.model_dump(exclude={"photos"}),
@@ -338,10 +367,10 @@ def review_batch(request, model):
         rows = parse_model_json(text)
     except (ReviewModelUnavailable, ValueError, TypeError) as error:
         log_review_failure(error)
-        return IntakeBatchResponse(results=results)
+        return results
     if not isinstance(rows, list):
         logger.warning("intake_review_failed reason=invalid_result_shape")
-        return IntakeBatchResponse(results=results)
+        return results
     findings, duplicates = {}, set()
     for row in rows:
         try:
@@ -373,7 +402,7 @@ def review_batch(request, model):
             results[key].lot_review = apply_lot_finding(
                 findings[key].lot_review, context, observations=observations
             )
-    return IntakeBatchResponse(results=results)
+    return results
 
 
 def review_candidate(request: IntakeAgentRequest, model):
