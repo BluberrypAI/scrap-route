@@ -1,0 +1,75 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from resource_ai.agents.evidence_validation import ReferenceValidationService
+from resource_ai.agents.research import CandidateResearchService
+from resource_ai.api.schemas.analysis import (
+    ResearchRequest,
+    ResearchResponse,
+    ScenarioComparisonRequest,
+    ScenarioComparisonResponse,
+)
+from resource_ai.api.schemas.evidence_validation import (
+    ReferenceValidationRequest,
+    ReferenceValidationResponse,
+)
+from resource_ai.calculators.scenarios import compare_scenarios
+from resource_ai.core.dependencies import get_graph_query, get_repository
+from resource_ai.evidence.models import SearchGroup
+from resource_ai.knowledge_graph.graph_store import GraphStoreError
+from resource_ai.knowledge_graph.query import GraphQuery
+
+router = APIRouter(prefix="/analysis", tags=["internal-analysis"])
+
+
+def get_research_service(graph: Annotated[GraphQuery, Depends(get_graph_query)]):
+    # KG 후보가 없을 때 불필요하게 임베딩 모델을 올리지 않도록 검색 저장소를 지연 생성한다.
+    # 초기화 실패는 질의별 검색 실패로 남기며, 근거를 찾지 못한 정상 결과로 바꾸지 않는다.
+    class LocalRepository:
+        def search(self, query, top_k):
+            return get_repository().search(query, top_k, search_group=SearchGroup.LEGAL)
+
+    return CandidateResearchService(graph, LocalRepository())
+
+
+def get_reference_validation_service(
+    graph: Annotated[GraphQuery, Depends(get_graph_query)],
+    repository: Annotated[object, Depends(get_repository)],
+):
+    return ReferenceValidationService(graph, repository)
+
+
+@router.post("/research", response_model=ResearchResponse)
+def research(
+    request: ResearchRequest,
+    service: Annotated[CandidateResearchService, Depends(get_research_service)],
+):
+    try:
+        return service.run(request)
+    except GraphStoreError as exc:
+        status = {"invalid-goal": 400, "invalid-cursor": 400, "stale-cursor": 409}.get(
+            exc.code, 503
+        )
+        raise HTTPException(
+            status_code=status, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
+
+
+@router.post("/reference-validation", response_model=ReferenceValidationResponse)
+def reference_validation(
+    request: ReferenceValidationRequest,
+    service: Annotated[ReferenceValidationService, Depends(get_reference_validation_service)],
+):
+    try:
+        return service.run(request)
+    except GraphStoreError as exc:
+        status = {"invalid-cursor": 400, "stale-cursor": 409}.get(exc.code, 503)
+        raise HTTPException(
+            status_code=status, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
+
+
+@router.post("/compare-scenarios", response_model=ScenarioComparisonResponse)
+def compare(request: ScenarioComparisonRequest):
+    return compare_scenarios(request)

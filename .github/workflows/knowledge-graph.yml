@@ -1,0 +1,60 @@
+name: Knowledge graph
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+jobs:
+  neo4j:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: re_ai
+          POSTGRES_USER: re_ai
+          POSTGRES_PASSWORD: ci-only-rag-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U re_ai -d re_ai"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      neo4j:
+        image: neo4j:5.26.32-community
+        env:
+          NEO4J_AUTH: neo4j/ci-only-graph-password
+          NEO4J_server_memory_heap_max__size: 1g
+          NEO4J_server_memory_pagecache_size: 256m
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p ci-only-graph-password 'RETURN 1'"
+          --health-interval 10s --health-timeout 10s --health-retries 30
+    env:
+      NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_PASSWORD: ci-only-graph-password
+      NEO4J_NAMESPACE: re-ai-ci
+      RUN_NEO4J_INTEGRATION: "true"
+      RUN_POSTGRES_INTEGRATION: "true"
+      DATABASE_URL: postgresql://re_ai:ci-only-rag-password@127.0.0.1:5432/re_ai
+      EMBEDDING_PROVIDER: hash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+      - run: resource-kg import --output kg-import.json
+      - run: resource-kg audit --output kg-audit.json
+      - run: python scripts/evaluate_knowledge_graph.py --output kg-evaluation.json
+      - run: python scripts/evaluate_kg_pool.py --output kg-pool-evaluation.json
+      - run: python scripts/evaluate_process_plans.py --output kg-plans-evaluation.json
+      - run: python scripts/evaluate_facility_search.py --output kg-facility-evaluation.json
+      - run: python scripts/evaluate_facility_assessment.py --output kg-condition-evaluation.json --scenario-output kg-pp-condition-scenario.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neo4j-validation
+          path: kg-*.json
