@@ -10,7 +10,9 @@
 
 Azure Responses의 텍스트+input_image 입력을 사용하며 기존 배포와 high 추론 설정을 유지한다. 요청은 store=false다. 이것이 Azure의 모든 운영 로그 무보관을 보장하는 것은 아니다. [공식 입력 형식](https://developers.openai.com/api/reference/python)을 참고했다.
 
-사진이 있으면 두 번의 호출로 나눈다. 첫 호출은 사진과 ID만 받아 외관을 관찰하며 소재 진술·상태 설명·업체 정보를 받지 않는다. 두 번째 호출은 이 관찰 결과와 현재 물량 설명·업체 근거를 대조한다. 두 번째 모델이 관찰문을 다시 작성하더라도 첫 관찰로 덮어써 보존한다. 사진이 없으면 비교 호출만 수행한다. 이 분리는 설명의 직접적인 관찰 편향을 줄이지만 시각 모델 오류와 실행 간 변동을 없애지는 않는다.
+사진이 있으면 관찰과 비교 단계로 나눈다. 첫 호출은 사진과 ID만 받아 외관을 관찰하며 소재 진술·상태 설명·업체 정보를 받지 않는다. 비교 단계는 이 관찰 결과와 현재 물량 설명·업체 근거를 대조한다. 비교 모델이 관찰문을 다시 작성하더라도 첫 관찰로 덮어써 보존한다. 사진이 없으면 비교 단계만 수행한다. 이 분리는 설명의 직접적인 관찰 편향을 줄이지만 시각 모델 오류와 실행 간 변동을 없애지는 않는다.
+
+2026-11-17 보강: 물량 검토는 업체 2곳씩 나눠 최대 3개 묶음을 동시에 비교한다. 요청의 최대 후보 5곳은 모두 유지하고, 사진 관찰은 요청당 1회만 한다. 실패한 묶음은 미완료로 남기고 다른 묶음의 성공 결과를 보존한다. 공개 근거만 요청하는 기존 호출은 한 묶음으로 유지한다. 상세 범위와 검증은 [호출 안정성 보강](intake-review-reliability-20261117.md)을 참고한다.
 
 각 후보 응답에 `lot_review`를 추가했다:
 
@@ -21,7 +23,7 @@ Azure Responses의 텍스트+input_image 입력을 사용하며 기존 배포와
 - `unknowns`: 화학 성분·재질·유해성·순도·수분의 사진 판정 한계, 입력값은 진술이라는 점, 전체 로트 대표성·허가·반입 규격·용량 미확인을 항상 표시한다.
 - `recipient_confirmation_required=true`, 기존 `dispatch_approved=false` 유지.
 - `observation_method=isolated_vision/no_photo/unavailable`: 사진 관찰 분리 실행 여부.
-- `concerns[].category=cleaning/sorting/drying/testing/facility_evidence/description_conflict/other`: 업체 문의 항목 구분. 자동 탈락이나 확정 규격이 아니다.
+- `concerns[].category=cleaning/sorting/drying/testing/facility_evidence/description_conflict/other`: 업체 문의 항목 구분. 자동 탈락이나 확정 규격이 아니다. `description_conflict`는 명시적인 외관 진술과 선명한 관찰이 직접 모순될 때만 요청한다. 얼룩의 정체나 세척 이력이 불명확한 것은 불일치로 확정하지 않는다.
 
 공개 근거 kind/source/quote는 사진을 근거로 긍정 판정할 수 없다. 무효 사진 ID·허위 설명 인용·누락된 사진 관찰·잘못된 응답은 물량 검토 미완료로 처리한다. 설명과 이미지의 지시문을 실행하지 않도록 프롬프트에서 데이터 경계를 명시했다. 자연어 관찰의 정확성을 코드가 모두 보장하는 것은 아니며 화학·안전 판단은 별도 검사 영역이다.
 
