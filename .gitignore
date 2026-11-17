@@ -16,3 +16,6 @@ data/official/
 /data/local/company-documents/
 
 /data/local/lci/
+# Generated graph explorer snapshots and local process logs.
+/scripts/kg_explorer/.data/
+
