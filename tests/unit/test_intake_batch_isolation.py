@@ -42,12 +42,13 @@ def test_five_candidates_share_one_observation_and_all_receive_bounded_reviews()
         batch = evidence["candidates"]
         with lock:
             seen.append([p["capability_key"] for p in batch])
-        barrier.wait()
+        if batch[0]["capability_key"] in {"site-0", "site-1", "site-2"}:
+            barrier.wait()
         return response(batch)
 
     results = review_batch(request, model).results
     assert len(photos) == 1
-    assert sorted(map(len, seen)) == [1, 2, 2]
+    assert sorted(map(len, seen)) == [1, 1, 1, 1, 1]
     assert sorted(key for batch in seen for key in batch) == list(results)
     assert all(value.status == "reviewed" for value in results.values())
     assert all(value.lot_review.status == "reviewed" for value in results.values())
@@ -86,12 +87,13 @@ def test_failed_comparison_does_not_discard_other_candidates_or_retry_photos(fau
     assert calls == ["photo"]
     assert [r.status for r in results.values()] == [
         "model_unavailable",
-        "model_unavailable",
+        "reviewed",
         "reviewed",
         "reviewed",
         "reviewed",
     ]
-    assert all(results[f"site-{i}"].lot_review.status == "model_unavailable" for i in (0, 1))
+    assert results["site-0"].lot_review.status == "model_unavailable"
+    assert results["site-1"].lot_review.status == "reviewed"
 
 
 def test_public_evidence_only_still_uses_one_call_for_five_candidates():

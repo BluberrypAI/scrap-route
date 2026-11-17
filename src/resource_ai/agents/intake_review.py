@@ -277,14 +277,16 @@ def review_batch(request, model):
     if context is not None and observations is None:
         logger.warning("intake_review_failed reason=photo_observation_unavailable")
         return IntakeBatchResponse(results=_unavailable_results(packets, context))
-    # Lot questions make a five-candidate answer too large for one model call.
-    # Share one independent observation; keep every candidate, with at most
-    # three concurrent comparisons (the HTTP contract allows five candidates).
-    size = 2 if context is not None else len(packets)
+    # One slow comparison must not invalidate another candidate's result.
+    # Share one independent observation and cap concurrency at three.
+    # The server sends at most three lot candidates per HTTP request.
+    size = 1 if context is not None else len(packets)
     chunks = [packets[start : start + size] for start in range(0, len(packets), size)]
     if len(chunks) == 1:
         return IntakeBatchResponse(results=_review_packets(chunks[0], context, observations, model))
-    with ThreadPoolExecutor(max_workers=len(chunks), thread_name_prefix="intake-review") as pool:
+    with ThreadPoolExecutor(
+        max_workers=min(3, len(chunks)), thread_name_prefix="intake-review"
+    ) as pool:
         batches = pool.map(
             lambda batch: _review_packets(batch, context, observations, model), chunks
         )
