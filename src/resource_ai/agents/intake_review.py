@@ -13,6 +13,7 @@ from resource_ai.agents.lot_review import (
     LotContext,
     LotFinding,
     LotReview,
+    PhotoObservation,
     apply_lot_finding,
     observe_photos,
 )
@@ -36,6 +37,9 @@ def log_review_failure(error):
             "HTTP 503": "provider_server_error",
             "HTTP 504": "provider_timeout",
             "provider timeout": "provider_timeout",
+            "provider busy": "provider_busy",
+            "provider response error": "provider_response_error",
+            "provider connection error": "provider_connection_error",
             "incomplete: max_output_tokens": "output_budget",
             "incomplete: content_filter": "provider_filter",
             "incomplete response": "incomplete_response",
@@ -121,12 +125,24 @@ class IntakeBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidates: list[PublicIntakePacket] = Field(min_length=1, max_length=5)
     lot_context: LotContext | None = None
+    photo_observations: list[PhotoObservation] | None = Field(default=None, max_length=4)
+    observation_signature: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def unique_candidates(self):
         keys = [packet.capability_key for packet in self.candidates]
         if len(keys) != len(set(keys)):
             raise ValueError("Duplicate candidate keys")
+        if self.photo_observations is not None:
+            ids = [o.photo_id for o in self.photo_observations]
+            if (
+                self.lot_context is None
+                or len(set(ids)) != len(ids)
+                or set(ids) != set(self.lot_context.observation_ids)
+            ):
+                raise ValueError("Observation IDs must match the lot photos")
+        elif self.lot_context and self.lot_context.photo_ids and not self.lot_context.photos:
+            raise ValueError("Photo references require independent observations")
         return self
 
 
@@ -273,10 +289,29 @@ def covers_initial_input(packet, finding):
 def review_batch(request, model):
     packets = request.candidates
     context = request.lot_context
-    observations = observe_photos(context, model) if context is not None else None
+    observations = request.photo_observations
+    if observations is None and context is not None:
+        observations = observe_photos(context, model)
     if context is not None and observations is None:
         logger.warning("intake_review_failed reason=photo_observation_unavailable")
         return IntakeBatchResponse(results=_unavailable_results(packets, context))
+    if observations and any(o.visibility == "not_waste" for o in observations):
+        # Preserve the established blocking signal without paying for facility comparisons.
+        blocked = apply_lot_finding(
+            LotFinding(photo_observations=[], concerns=[], questions=[]),
+            context,
+            observations=observations,
+        )
+        return IntakeBatchResponse(
+            results={
+                p.capability_key: IntakeAgentResponse(
+                    status="needs_evidence",
+                    next_check="실제 물량 사진으로 교체해 주세요.",
+                    lot_review=blocked,
+                )
+                for p in packets
+            }
+        )
     # One slow comparison must not invalidate another candidate's result.
     # Share one independent observation and cap concurrency at three.
     # The server sends at most three lot candidates per HTTP request.
@@ -323,7 +358,7 @@ def _review_packets(packets, context, observations, model):
         evidence = {
             "candidates": evidence,
             "lot": context.model_dump(exclude={"photos"}),
-            "photo_ids": [p.photo_id for p in context.photos],
+            "photo_ids": context.observation_ids,
             "visual_observations": [p.model_dump() for p in observations],
         }
         # Text-only comparison, with the larger lot-review response budget.

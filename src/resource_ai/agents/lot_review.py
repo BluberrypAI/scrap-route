@@ -38,12 +38,28 @@ class LotContext(Strict):
     purity_percent: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
     condition: str = Field(min_length=3, max_length=1500)
     photos: list[LotPhoto] = Field(default_factory=list, max_length=4)
+    # Authenticated server may send previously observed photo IDs without image bytes.
+    photo_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def unique_photos(self):
         if len({p.photo_id for p in self.photos}) != len(self.photos):
             raise ValueError("Duplicate photo IDs")
+        if len(set(self.photo_ids)) != len(self.photo_ids) or any(
+            not 1 <= len(key) <= 64 for key in self.photo_ids
+        ):
+            raise ValueError("Invalid photo IDs")
+        if (
+            self.photos
+            and self.photo_ids
+            and set(self.photo_ids) != {p.photo_id for p in self.photos}
+        ):
+            raise ValueError("Photo IDs do not match images")
         return self
+
+    @property
+    def observation_ids(self):
+        return [p.photo_id for p in self.photos] or self.photo_ids
 
 
 class PhotoObservation(Strict):
@@ -130,12 +146,12 @@ def apply_lot_finding(finding, context, observations=None):
         "중량·형태·상태 설명·입력된 순도는 사용자 기록이며 AI가 측정·인증한 값이 아닙니다.",
         "사진이 전체 물량을 대표하는지, 업체의 현재 허가·반입 규격·처리 여력은 별도 확인이 필요합니다.",
     ]
-    if not context.photos:
+    if not context.observation_ids:
         unknowns.append("사진이 없어 외관 상태는 확인하지 못했습니다.")
     missing = LotReview(status="model_unavailable", unknowns=unknowns)
     if finding is None:
         return missing
-    photo_ids = {p.photo_id for p in context.photos}
+    photo_ids = set(context.observation_ids)
     # Every supplied image must be accounted for, including unreadable/non-waste images.
     observed = observations if observations is not None else finding.photo_observations
     if len(observed) != len(photo_ids) or {o.photo_id for o in observed} != photo_ids:
@@ -153,9 +169,9 @@ def apply_lot_finding(finding, context, observations=None):
         photo_observations=observed,
         unknowns=unknowns,
         observation_method="isolated_vision"
-        if observations is not None and context.photos
+        if observations is not None and context.observation_ids
         else "no_photo"
-        if not context.photos
+        if not context.observation_ids
         else "unavailable",
     )
 
