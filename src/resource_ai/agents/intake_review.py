@@ -127,12 +127,18 @@ class IntakeBatchRequest(BaseModel):
     lot_context: LotContext | None = None
     photo_observations: list[PhotoObservation] | None = Field(default=None, max_length=4)
     observation_signature: str | None = Field(default=None, max_length=64)
+    public_findings: dict[CapabilityKey, Finding] | None = Field(default=None, max_length=5)
+    public_signature: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def unique_candidates(self):
         keys = [packet.capability_key for packet in self.candidates]
         if len(keys) != len(set(keys)):
             raise ValueError("Duplicate candidate keys")
+        if self.public_findings is not None and (
+            self.lot_context is None or set(self.public_findings) != set(keys)
+        ):
+            raise ValueError("Cached public findings must match the lot candidates")
         if self.photo_observations is not None:
             ids = [o.photo_id for o in self.photo_observations]
             if (
@@ -318,12 +324,19 @@ def review_batch(request, model):
     size = 1 if context is not None else len(packets)
     chunks = [packets[start : start + size] for start in range(0, len(packets), size)]
     if len(chunks) == 1:
-        return IntakeBatchResponse(results=_review_packets(chunks[0], context, observations, model))
+        return IntakeBatchResponse(
+            results=_review_packets(
+                chunks[0], context, observations, model, request.public_findings
+            )
+        )
     with ThreadPoolExecutor(
         max_workers=min(3, len(chunks)), thread_name_prefix="intake-review"
     ) as pool:
         batches = pool.map(
-            lambda batch: _review_packets(batch, context, observations, model), chunks
+            lambda batch: _review_packets(
+                batch, context, observations, model, request.public_findings
+            ),
+            chunks,
         )
         return IntakeBatchResponse(
             results={key: value for batch in batches for key, value in batch.items()}
@@ -341,7 +354,58 @@ def _unavailable_results(packets, context):
     }
 
 
-def _review_packets(packets, context, observations, model):
+def apply_public_finding(packet, finding):
+    sources = (
+        {source.source_id: source for source in packet.sources}
+        if packet.site_scope == "published_site_process" and covers_initial_input(packet, finding)
+        else {}
+    )
+    result = apply_finding(finding, sources, packet.next_check)
+    if packet.site_scope != "published_site_process":
+        result.evidence_gaps = ["site_scope_unverified"]
+    elif not packet.sources:
+        result.evidence_gaps = ["source_missing"]
+    elif not covers_initial_input(packet, finding):
+        result.evidence_gaps = initial_input_gaps(packet, finding)
+    return result
+
+
+def _review_cached_lots(packets, context, observations, model, public_findings):
+    results = {}
+    for packet in packets:
+        value = apply_public_finding(packet, public_findings[packet.capability_key])
+        if value.status != "reviewed" or value.finding != "form_mentioned":
+            results[packet.capability_key] = value
+            continue
+        finding = None
+        try:
+            result = model(
+                instructions=LOT_INSTRUCTIONS + "\n공개 업체 근거는 별도로 검증 완료됐다. "
+                "이번 응답은 현재 물량의 lot_review 내용만 JSON 객체 하나로 반환한다: "
+                "photo_observations, concerns, questions. kind/source_id/quote는 생성하지 않는다. "
+                "같은 업체 근거를 다시 판정하지 않고 이번 물량의 확인점만 대조한다.",
+                evidence=json.dumps(
+                    {
+                        "candidate": packet.model_dump(exclude={"sources"}),
+                        "verified_public_review": value.model_dump(exclude={"lot_review"}),
+                        "lot": context.model_dump(exclude={"photos"}),
+                        "visual_observations": [o.model_dump() for o in observations],
+                    },
+                    ensure_ascii=False,
+                ),
+                images=[],
+            )
+            finding = LotFinding.model_validate(parse_model_json(result))
+        except (ReviewModelUnavailable, ValueError, TypeError) as error:
+            log_review_failure(error)
+        value.lot_review = apply_lot_finding(finding, context, observations=observations)
+        results[packet.capability_key] = value
+    return results
+
+
+def _review_packets(packets, context, observations, model, public_findings=None):
+    if public_findings is not None:
+        return _review_cached_lots(packets, context, observations, model, public_findings)
     results = _unavailable_results(packets, context)
     evidence = [
         {
@@ -422,19 +486,7 @@ def _review_packets(packets, context, observations, model):
         if key not in findings or key in duplicates:
             logger.warning("intake_review_failed reason=missing_or_duplicate_result")
             continue
-        sources = (
-            {source.source_id: source for source in packet.sources}
-            if packet.site_scope == "published_site_process"
-            and covers_initial_input(packet, findings[key])
-            else {}
-        )
-        results[key] = apply_finding(findings[key], sources, packet.next_check)
-        if packet.site_scope != "published_site_process":
-            results[key].evidence_gaps = ["site_scope_unverified"]
-        elif not packet.sources:
-            results[key].evidence_gaps = ["source_missing"]
-        elif not covers_initial_input(packet, findings[key]):
-            results[key].evidence_gaps = initial_input_gaps(packet, findings[key])
+        results[key] = apply_public_finding(packet, findings[key])
         if context is not None:
             results[key].lot_review = apply_lot_finding(
                 findings[key].lot_review, context, observations=observations

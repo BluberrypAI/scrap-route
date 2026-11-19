@@ -64,6 +64,23 @@ def test_photo_endpoint_requires_service_auth_and_returns_versioned_independent_
             },
         )
         assert changed.status_code == 409
+        stale_public = client.post(
+            "/treatment/intake-reviews",
+            headers=headers,
+            json={
+                "candidates": [packet()],
+                "lot_context": {"state_key": "pp-scrap", "mass_kg": 100, "condition": "합성 물량"},
+                "public_signature": "old-model-version",
+                "public_findings": {
+                    "site-a": {
+                        "kind": "form_mentioned",
+                        "source_id": "s1",
+                        "quote": "This site accepts PP scrap.",
+                    }
+                },
+            },
+        )
+        assert stale_public.status_code == 409
     assert len(calls) == 1
 
 

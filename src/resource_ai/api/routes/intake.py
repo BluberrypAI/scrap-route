@@ -50,6 +50,10 @@ def intake_review(request: IntakeAgentRequest, settings: InternalSettings):
 
 @router.post("/intake-reviews", response_model=IntakeBatchResponse)
 def intake_reviews(request: IntakeBatchRequest, settings: InternalSettings):
+    if request.public_findings is not None and (
+        request.public_signature != review_config(settings)["public_signature"]
+    ):
+        raise HTTPException(status_code=409, detail="Public review version changed")
     if request.photo_observations is not None and (
         request.observation_signature != review_config(settings)["photo_signature"]
     ):

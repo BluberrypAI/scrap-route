@@ -22,4 +22,5 @@ def review_config(settings):
         "version": "progressive-review-v1",
         "photo_signature": signature([identity, PHOTO_INSTRUCTIONS, code]),
         "comparison_signature": signature([identity, INSTRUCTIONS, LOT_INSTRUCTIONS, code]),
+        "public_signature": signature([identity, INSTRUCTIONS, code, "public-only-v1"]),
     }
