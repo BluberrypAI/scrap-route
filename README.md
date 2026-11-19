@@ -14,6 +14,7 @@
 - 수도권 후속 검증: [신규 업체 검토·알루미늄캔 표현 수정](docs/capital-region-review-20261116.md). 원문에 있는 “알루미늄캔”을 놓치던 형태 검증을 수정했으며 실제 업체 인수는 자동 승인하지 않습니다.
 - 의사결정 연구 검토: [docs/scrap-decision-research.md](docs/scrap-decision-research.md)
 - 팀 공통 규칙: [resource-ai-team/.github CONTRIBUTING](https://github.com/resource-ai-team/.github/blob/main/CONTRIBUTING.md)
+- 예전 KG를 보는 독립 개발 도구: [scripts/kg_explorer](scripts/kg_explorer/README.md). 현재 업체 검토 런타임에서는 사용하지 않습니다.
 
 ## 조직 레포 구성
 
