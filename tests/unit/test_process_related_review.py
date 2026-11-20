@@ -37,16 +37,45 @@ def test_process_manufacturing_without_explicit_feedstock_acceptance_is_a_candid
 @pytest.mark.parametrize(
     "summary,material,scope",
     [
-        ("This supplier sells PP pellets.", "pp", "published_site_process"),
         ("This factory manufactures PE pellets.", "pp", "published_site_process"),
         ("This factory does not manufacture PP pellets.", "pp", "published_site_process"),
-        ("This company manufactures recycled PP pellets.", "pp", "site_role_hypothesis"),
     ],
 )
-def test_sales_wrong_material_negated_operation_and_unknown_site_are_not_confirmed(
-    summary, material, scope
-):
+def test_wrong_material_and_explicit_negated_operation_are_not_matched(summary, material, scope):
     p, finding = reviewed(summary, material=material, scope=scope)
+    assert apply_public_finding(p, finding).process_match == "unverified"
+
+
+@pytest.mark.parametrize("scope", ["published_site_process", "site_role_hypothesis"])
+@pytest.mark.parametrize(
+    "summary,material",
+    [
+        ("This supplier sells PP pellets.", "pp"),
+        ("이 회사의 취급 소재: PE, PET.", "pe"),
+        ("이 회사의 취급 소재: PE, PET.", "pet"),
+        ("회사 제품: 알루미늄 재생 원료.", "aluminium"),
+    ],
+)
+def test_company_material_listing_is_enough_for_an_inquiry_candidate(summary, material, scope):
+    p, finding = reviewed(summary, material=material, scope=scope)
+    result = apply_public_finding(p, finding)
+    assert result.status == "reviewed" and result.process_match == "matched"
+    assert result.process_quote == summary and not result.dispatch_approved
+
+
+def test_company_scope_restriction_and_fabricated_citation_still_block():
+    summary = "이 회사는 PE 반입 불가입니다."
+    p, finding = reviewed(summary, material="pe", scope="site_role_hypothesis")
+    finding.kind = "restriction_mentioned"
+    finding.source_id = "s1"
+    finding.quote = summary
+    finding.process_match = "mismatch"
+    result = apply_public_finding(p, finding)
+    assert result.finding == "restriction_mentioned" and result.process_match == "mismatch"
+    assert not result.dispatch_approved
+    finding.kind = "insufficient"
+    finding.process_match = "matched"
+    finding.process_quote = "이 회사는 PE를 취급합니다."
     assert apply_public_finding(p, finding).process_match == "unverified"
 
 
