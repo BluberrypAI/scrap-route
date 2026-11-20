@@ -1,14 +1,18 @@
 """Azure Responses adapter for an explicit, bounded evidence review."""
 
 import json
+import logging
 import re
 import time
+from threading import BoundedSemaphore
 from urllib.parse import urlsplit
 
 import httpx
 
 # 리소스 단위 Azure OpenAI v1 경로. 호출은 항상 {host}/openai/v1/responses로 보낸다
 V1_PATHS = {"/openai/v1", "/openai/v1/responses"}
+_model_slots = BoundedSemaphore(3)
+logger = logging.getLogger(__name__)
 
 
 class ReviewModelUnavailable(RuntimeError):
@@ -36,6 +40,28 @@ def parse_model_json(text: str):
 
 
 def azure_response(settings, body, *, timeout):
+    """Bound model calls across simultaneous requests in this worker process."""
+    started = time.monotonic()
+    if not _model_slots.acquire(timeout=min(10, timeout)):
+        raise ReviewModelUnavailable("provider busy")
+    waited = time.monotonic() - started
+    try:
+        payload = _azure_response(settings, body, timeout=max(0.1, timeout - waited))
+        usage = payload.get("usage") or {}
+        # Operational counts only: never log prompts, image IDs, URLs, or provider text.
+        logger.info(
+            "review_model_completed wait_ms=%d elapsed_ms=%d input_tokens=%s output_tokens=%s",
+            int(waited * 1000),
+            int((time.monotonic() - started) * 1000),
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
+        )
+        return payload
+    finally:
+        _model_slots.release()
+
+
+def _azure_response(settings, body, *, timeout):
     try:
         endpoint = urlsplit(settings.azure_openai_endpoint)
     except ValueError:
@@ -63,13 +89,23 @@ def azure_response(settings, body, *, timeout):
     prefix = project[1] if project else ""
     try:
         deadline = time.monotonic() + timeout
-        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+        # Retry only failures before an HTTP request is established, not read/write failures.
+        transport = httpx.HTTPTransport(retries=1, trust_env=False)
+        with httpx.Client(
+            timeout=timeout, transport=transport, follow_redirects=False, trust_env=False
+        ) as client:
             for attempt in range(2):
+                remaining = max(0.1, deadline - time.monotonic())
                 response = client.post(
                     f"https://{host}{prefix}/openai/v1/responses",
                     headers={"api-key": key},
                     json={**body, "model": settings.azure_openai_deployment, "store": False},
-                    timeout=max(0.1, deadline - time.monotonic()),
+                    timeout=httpx.Timeout(
+                        remaining,
+                        connect=min(10, remaining),
+                        write=min(20, remaining),
+                        pool=min(10, remaining),
+                    ),
                 )
                 try:
                     response.raise_for_status()
@@ -101,6 +137,8 @@ def azure_response(settings, body, *, timeout):
         raise ReviewModelUnavailable(f"HTTP {error.response.status_code}") from None
     except httpx.TimeoutException:
         raise ReviewModelUnavailable("provider timeout") from None
+    except httpx.ConnectError:
+        raise ReviewModelUnavailable("provider connection error") from None
     except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
         raise ReviewModelUnavailable("provider response error") from None
 
